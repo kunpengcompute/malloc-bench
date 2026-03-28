@@ -815,7 +815,9 @@ if test "$setup_bench" = "1"; then
   if test -f sh6bench-new.c; then
     echo "do nothing: bench/shbench/sh6bench-new.c already exists"
   else
-    wget --no-verbose http://www.microquill.com/smartheap/shbench/bench.zip
+    local_bench_zip="../../extern/bench.zip"
+    cp -f "$local_bench_zip" ./bench.zip
+    # wget --no-verbose http://www.microquill.com/smartheap/shbench/bench.zip
     check_checksum "bench.zip" "$sha256sum_sh6bench"
     unzip -o bench.zip
     dos2unix sh6bench.patch
@@ -825,7 +827,9 @@ if test "$setup_bench" = "1"; then
   if test -f sh8bench-new.c; then
     echo "do nothing: bench/shbench/sh8bench-new.c already exists"
   else
-    wget --no-verbose http://www.microquill.com/smartheap/SH8BENCH.zip
+    local_bench_zip="../../extern/SH8BENCH.zip"
+    cp -f "$local_bench_zip" ./SH8BENCH.zip
+    #wget --no-verbose http://www.microquill.com/smartheap/SH8BENCH.zip
     check_checksum "SH8BENCH.zip" "$sha256sum_sh8bench"
     unzip -o SH8BENCH.zip
     dos2unix sh8bench.patch
