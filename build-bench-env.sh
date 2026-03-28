@@ -45,6 +45,7 @@ readonly version_hd=6577c22b # HEAD as of 2025-07-18, no release since 2019
 readonly version_hm=11
 readonly version_iso=1.2.5
 readonly version_je=5.3.0
+readonly version_kq=master
 readonly version_lf=master   # ~unmaintained since 2018
 readonly version_lp=main
 readonly version_lt=master   # ~unmaintained since 2019
@@ -85,6 +86,7 @@ setup_hd=0
 setup_hm=0
 setup_iso=0
 setup_je=0
+setup_kq=0
 setup_lf=0
 setup_lp=0
 setup_lt=0
@@ -138,6 +140,7 @@ while : ; do
         setup_hd=$flag_arg              
         setup_iso=$flag_arg
         setup_je=$flag_arg
+        setup_kq=$flag_arg
         setup_lp=$flag_arg
         setup_mi=$flag_arg
         setup_mi2=$flag_arg
@@ -192,6 +195,8 @@ while : ; do
         setup_iso=$flag_arg;;
     je)
         setup_je=$flag_arg;;
+    kq)
+        setup_kq=$flag_arg;;
     lf)
         setup_lf=$flag_arg;;
     lp)
@@ -261,6 +266,7 @@ while : ; do
         echo "  hm                           setup hardened_malloc ($version_hm)"
         echo "  iso                          setup isoalloc ($version_iso)"
         echo "  je                           setup jemalloc ($version_je)"
+        echo "  kq                           setup kqmalloc ($version_kq)"
         echo "  lf                           setup lockfree-malloc ($version_lf)"
         echo "  lp                           setup libpas ($version_lp)"
         echo "  lt                           setup ltmalloc ($version_lt)"
@@ -632,6 +638,16 @@ if test "$setup_je" = "1"; then
   make -j $procs
   [ "$CI" ] && rm -rf ./src/*.o  # jemalloc has like ~100MiB of object files
   [ "$CI" ] && rm -rf ./lib/*.a  # jemalloc produces 80MiB of static files
+  popd
+fi
+
+if test "$setup_kq" = "1"; then
+  checkout kq $version_kq https://gitcode.com/boostkit/kqmalloc.git
+  if test -f config.status; then
+    echo "$devdir/kqmalloc is already configured; no need to reconfigure"
+  else
+    make clean kunpeng
+  fi
   popd
 fi
 
