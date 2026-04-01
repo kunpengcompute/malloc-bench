@@ -6,7 +6,7 @@
 # Allocators and tests
 # --------------------------------------------------------------------
 
-readonly alloc_all="sys dh ff fg gd hd hm hml iso je lf lp lt mi mi-sec mi2 mi2-sec mng mesh nomesh pa rp sc scudo sg sm sn sn-sec tbb tc tcg mi-dbg mi2-dbg xmi xsmi xmi-dbg yal"
+readonly alloc_all="sys dh ff fg gd hd hm hml iso je kq_09 kq_12 lf lp lt mi mi-sec mi2 mi2-sec mng mesh nomesh pa rp sc scudo sg sm sn sn-sec tbb tc tcg mi-dbg mi2-dbg xmi xsmi xmi-dbg yal"
 readonly alloc_secure="dh ff gd hm hml iso mi-sec mi2-sec mng pa scudo sg sn-sec sg"
 alloc_run=""           # allocators to run (expanded by command line options)
 alloc_installed="sys"  # later expanded to include all installed allocators
@@ -107,6 +107,8 @@ alloc_lib_add "hm"     "$localdevdir/hm/out/libhardened_malloc$extso"
 alloc_lib_add "hml"    "$localdevdir/hm/out-light/libhardened_malloc-light$extso"
 alloc_lib_add "iso"    "$localdevdir/iso/build/libisoalloc$extso"
 alloc_lib_add "je"     "$localdevdir/je/lib/libjemalloc$extso"
+alloc_lib_add "kq_09"  "$localdevdir/kq/build/HIP09/lib/libkqmallocmt$extso"
+alloc_lib_add "kq_12"  "$localdevdir/kq/build/HIP12/lib/libkqmallocmt$extso"
 alloc_lib_add "lf"     "$localdevdir/lf/liblite-malloc-shared$extso"
 alloc_lib_add "lp"     "$localdevdir/lp/Source/bmalloc/libpas/build-cmake-default/Release/libpas_lib$extso"
 alloc_lib_add "lt"     "$localdevdir/lt/gnu.make.lib/libltalloc$extso"
@@ -396,6 +398,8 @@ while : ; do
             echo "  hml                          use hardened_malloc light"
             echo "  iso                          use isoalloc"
             echo "  je                           use jemalloc"
+            echo "  kq_09                        use kqmalloc for HIP09"
+            echo "  kq_12                        use kqmalloc for HIP12"
             echo "  lp                           use libpas"
             echo "  lf                           use lockfree-malloc"
             echo "  mesh                         use mesh"
