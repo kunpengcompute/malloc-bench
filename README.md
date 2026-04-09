@@ -54,6 +54,11 @@ Or just test _mimalloc_ and _tcmalloc_ on _cfrac_ and _larson_ with 16 threads:
 
 - `~/dev/mimalloc-bench/out/bench>../../bench.sh --procs=16 mi tc cfrac larson`
 
+Or run the **quick essential benchmark set** (`quickt`) covering the four most
+representative tests across distinct evaluation dimensions:
+
+- `~/dev/mimalloc-bench/out/bench>../../bench.sh --procs=\`nproc\` -r=5 -n=1 -s=1 kq_09 je tc mi quickt`
+
 Generally, you can specify the allocators (`mi`, `je`,
 `tc`, `hd`, `sys` (system allocator)) etc, and the benchmarks
 , `cfrac`, `espresso`, `barnes`, `lean`, `larson`, `alloc-test`, `cscratch`, etc.
@@ -218,6 +223,108 @@ The second set of benchmarks are stress tests and consist of:
 Finally, there is a
 [security benchmark](https://github.com/daanx/mimalloc-bench/tree/master/bench/security)
 aiming at checking basic security properties of allocators.
+
+## Benchmark Evaluation Dimensions
+
+The full benchmark suite covers the following key evaluation dimensions:
+
+| Dimension | Benchmarks |
+|-----------|-----------|
+| Single-thread throughput | cfrac, espresso, glibc-simple, alloc-test1 |
+| Multi-thread scalability | leanN, alloc-testN, sh8bench, xmalloc-testN, glibc-thread |
+| Cross-thread object migration | larson, sh8bench, xmalloc-test, mstress |
+| Cache locality / false sharing | cache-scratch, cache-thrash, espresso |
+| Large allocation efficiency | malloc-large |
+| Memory footprint / fragmentation | all benchmarks (RSS peak recorded) |
+| Thread-exit memory reclamation | mleak |
+| Real-world application workloads | redis, gs, lean, lua, linux, rocksdb, z3, spec |
+| Security properties | security (double-free, overflow, underflow, use-after-free, …) |
+
+## Benchmark Ranking: Generality and Discriminative Power
+
+The table below ranks each benchmark by two criteria:
+
+- **Generality** — how broadly representative the workload is of real-world usage
+- **Effectiveness** — how well the benchmark differentiates allocator quality
+
+| Rank | Benchmark | Generality | Effectiveness | Rationale |
+|:----:|-----------|:----------:|:-------------:|-----------|
+| 1 | **leanN** | ★★★★★ | ★★★★★ | Large real-world multi-threaded compiler workload with intensive allocations; best at exposing practical performance differences |
+| 2 | **alloc-testN** | ★★★★☆ | ★★★★★ | Pareto-distributed sizes mimic realistic programs; 100M allocs/thread sharply differentiates throughput |
+| 3 | **larson / larson-sized** | ★★★★★ | ★★★★☆ | Classic server cross-thread "bleeding" pattern; used in nearly every allocator paper |
+| 4 | **cfrac** | ★★★★☆ | ★★★★☆ | Canonical single-thread small-object benchmark; clearly exposes single-threaded allocation efficiency |
+| 5 | **xmalloc-testN** | ★★★☆☆ | ★★★★★ | Extreme producer/consumer asymmetry; most effective at exposing weaknesses in thread-local caching strategies |
+| 6 | **cache-scratch** | ★★★☆☆ | ★★★★★ | Precisely measures passive false sharing; the only test that effectively detects this critical issue |
+| 7 | **redis** | ★★★★★ | ★★★☆☆ | High real-world relevance (server workload), but allocator differences are typically small |
+| 8 | **mstress** | ★★★★☆ | ★★★★☆ | Multi-phase thread recreation with object migration; good all-round stress test |
+| 9 | **espresso** | ★★★★☆ | ★★★☆☆ | Classic cache-locality benchmark, but single-threaded nature limits discriminative power |
+| 10 | **rptest** | ★★★☆☆ | ★★★★☆ | Highly configurable; covers multiple dimensions, but use-case is narrower |
+| 11 | **linux** | ★★★★★ | ★★★☆☆ | Most realistic build workload; allocator impact is often overshadowed by I/O |
+| 12 | **rocksdb** | ★★★★☆ | ★★★☆☆ | Good database-workload coverage; bottleneck is often I/O rather than allocation |
+| 13 | **sh6bench / sh8bench** | ★★★☆☆ | ★★★☆☆ | Classic stress tests with synthetic free-order patterns |
+| 14 | **malloc-large** | ★★★☆☆ | ★★★☆☆ | Specific but important large-allocation scenario |
+| 15 | **barnes** | ★★★☆☆ | ★★☆☆☆ | Too few allocations to meaningfully differentiate allocators |
+| 16 | **security (135 tests)** | ★★★★☆ | ★★★★★ | Unique safety dimension; measures security properties rather than performance |
+| 17 | **mleak** | ★★☆☆☆ | ★★★★☆ | Narrow scenario, but the thread-exit leak issue it detects is critical |
+| 18 | **spec** | ★★★★★ | ★★★★☆ | Industry-standard suite; requires a separate SPEC CPU 2017 installation |
+| 19 | **glibc-simple / glibc-thread** | ★★★☆☆ | ★★☆☆☆ | Simple glibc-derived patterns with limited discriminative power |
+| 20 | **z3, gs, lua, lean-mathlib, rbstress, cache-thrash** | ★★☆☆☆ | ★★☆☆☆ | Supplementary tests covering long-tail scenarios |
+
+## Quick Benchmark Set (`quickt`)
+
+For a fast but representative evaluation, use the `quickt` option:
+
+```
+~/dev/mimalloc-bench/out/bench> ../../bench.sh --procs=`nproc` -r=5 -n=1 -s=1 kq_09 je tc mi quickt
+```
+
+This runs carefully selected benchmarks that together cover the most important
+and distinct evaluation dimensions:
+
+| Benchmark | Key Dimension | Why Selected |
+|-----------|--------------|-------------|
+| **cfrac** | Single-thread small-object throughput | The canonical baseline for pure allocation speed; fast and low-noise |
+| **alloc-testN** | Multi-thread scalability | Pareto size distribution; 100M allocs/thread yields the clearest throughput signal |
+| **larson-sized** | Cross-thread object migration + sized deallocation | Represents server workloads where objects are freed by threads other than their allocator; also exercises the sized-free fast path |
+| **leanN** | Real-world dense multi-thread allocation | Large-scale compiler workload; most predictive of real application performance |
+| **redis** | Real-world single-threaded workload | High real-world relevance (server workload) |
+| **rocksdb** | Real-world storage engine workload | Good database-workload coverage; bottleneck is often I/O rather than allocation; but particularly effective for validating memory usage characteristics |
+
+These benchmarks cover single-threaded performance, multi-threaded scalability,
+cross-thread migration, real-world behavior, and memory usage — together giving a
+meaningful and well-rounded picture of allocator quality.
+
+For a more thorough evaluation, add `xmalloc-test`, `mstress`, `cache-scratch`,
+`malloc-large`, and `security` to cover extreme cross-thread patterns, large
+allocations, false-sharing detection, and security properties.
+
+### One-shot runner: `run_quickt.sh`
+
+`run_quickt.sh` is a convenience wrapper that runs the `quickt` set and
+immediately feeds the results through `scripts/analyze_bench.py` (median,
+MAD, and ratio tables appended to `benchres.csv`).
+
+```bash
+# Default: auto-detects KQ allocator variant from CPU part, plus je tc mi
+./run_quickt.sh
+
+# Explicit allocator list
+./run_quickt.sh kq_09 je tc mi
+
+# Override rounds and core count
+ROUNDS=3 PROCS=4 ./run_quickt.sh kq_09 je tc mi
+```
+
+The script auto-detects the KQ allocator variant from `/proc/cpuinfo`:
+
+| CPU part | Variant selected |
+|----------|-----------------|
+| `0xd06`  | `kq_12`         |
+| `0xd02`  | `kq_09`         |
+| other    | `kq_08`         |
+
+After the run, `scripts/analyze_bench.py` prints median, MAD, and ratio
+tables to stdout and appends them to `out/bench/benchres.csv`.
 
 ## Example
 

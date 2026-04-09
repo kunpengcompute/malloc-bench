@@ -6,7 +6,7 @@
 # Allocators and tests
 # --------------------------------------------------------------------
 
-readonly alloc_all="sys dh ff fg gd hd hm hml iso je kq_09 kq_12 lf lp lt mi mi-sec mi2 mi2-sec mng mesh nomesh pa rp sc scudo sg sm sn sn-sec tbb tc tcg mi-dbg mi2-dbg xmi xsmi xmi-dbg yal"
+readonly alloc_all="sys dh ff fg gd hd hm hml iso je kq_08 kq_09 kq_12 lf lp lt mi mi-sec mi2 mi2-sec mng mesh nomesh pa rp sc scudo sg sm sn sn-sec tbb tc tcg mi-dbg mi2-dbg xmi xsmi xmi-dbg yal"
 readonly alloc_secure="dh ff gd hm hml iso mi-sec mi2-sec mng pa scudo sg sn-sec sg"
 alloc_run=""           # allocators to run (expanded by command line options)
 alloc_installed="sys"  # later expanded to include all installed allocators
@@ -19,6 +19,7 @@ readonly tests_all4="z3 spec spec-bench security"
 
 readonly tests_all="$tests_all1 $tests_all2 $tests_all3 $tests_all4"
 readonly tests_allt="$tests_all1 $tests_all2"  # run with 'allt' command option
+readonly tests_quickt="cfrac alloc-testN larson-sized lean redis rocksdb"  # quick essential benchmarks, run with 'quickt' command option
 
 tests_run=""
 tests_exclude=""
@@ -107,6 +108,7 @@ alloc_lib_add "hm"     "$localdevdir/hm/out/libhardened_malloc$extso"
 alloc_lib_add "hml"    "$localdevdir/hm/out-light/libhardened_malloc-light$extso"
 alloc_lib_add "iso"    "$localdevdir/iso/build/libisoalloc$extso"
 alloc_lib_add "je"     "$localdevdir/je/lib/libjemalloc$extso"
+alloc_lib_add "kq_08"  "$localdevdir/kq/build/HIP08/lib/libkqmallocmt$extso"
 alloc_lib_add "kq_09"  "$localdevdir/kq/build/HIP09/lib/libkqmallocmt$extso"
 alloc_lib_add "kq_12"  "$localdevdir/kq/build/HIP12/lib/libkqmallocmt$extso"
 alloc_lib_add "lf"     "$localdevdir/lf/liblite-malloc-shared$extso"
@@ -237,6 +239,9 @@ fi
 if is_installed "sn"; then
   alloc_installed="$alloc_installed sn-sec"   # secure snmalloc
 fi
+if is_installed "kq"; then
+  alloc_installed="$alloc_installed kq_08 kq_09 kq_12"  # kqmalloc HIP variants
+fi
 
 
 alloc_lib=""
@@ -351,6 +356,10 @@ while : ; do
             for tst in $tests_allt; do
               tests_run_add_remove "$tst" "$flag_arg"
             done;;
+        quickt)
+            for tst in $tests_quickt; do
+              tests_run_add_remove "$tst" "$flag_arg"
+            done;;
         glibc)
             tests_run_add_remove "glibc-simple" "$flag_arg"
             tests_run_add_remove "glibc-thread" "$flag_arg";;
@@ -381,10 +390,11 @@ while : ; do
             echo "  -s=<n>, --sleep=<n>          seconds of sleep between each test (=$sleep)"
             echo "  --external=<file>            read external allocators from <file>, one per line, in the format <name> <path>"
             echo ""
+            echo "  quickt                       run quick essential benchmarks (cfrac, alloc-testN, larson-sized, lean, redis, rocksdb)"
             echo "  allt                         run all tests"
             echo "  alla                         run all allocators"
             echo "  allsa                        run all \"secure\" allocators"
-            echo "  no-<test|allocator>          do not run specific <test> or <allocator>"   
+            echo "  no-<test|allocator>          do not run specific <test> or <allocator>"
             echo ""
             echo "allocators:"
             echo "  dh                           use dieharder"
@@ -398,6 +408,7 @@ while : ; do
             echo "  hml                          use hardened_malloc light"
             echo "  iso                          use isoalloc"
             echo "  je                           use jemalloc"
+            echo "  kq_08                        use kqmalloc for HIP08"
             echo "  kq_09                        use kqmalloc for HIP09"
             echo "  kq_12                        use kqmalloc for HIP12"
             echo "  lp                           use libpas"
@@ -422,6 +433,9 @@ while : ; do
             echo "  tc                           use tcmalloc (from gperftools)"
             echo "  tcg                          use tcmalloc (from Google)"
             echo "  yalloc                       use yalloc"
+            echo ""
+            echo "quick essential tests ('quickt'):"
+            echo "  $tests_quickt"
             echo ""
             echo "tests included in 'allt':"
             echo "  $tests_all1"
@@ -713,10 +727,20 @@ function run_test {  # <test>
           run_test_cmd "alloc-testN" "./alloc-test $procs"
         fi
       fi;;
-    larson)   
-      run_test_cmd "larsonN" "./larson 5 8 1000 5000 100 4141 $procs";;
+    alloc-testN)
+      if test "$procs" != "1"; then
+        if test $procs -gt 16; then
+          run_test_cmd "alloc-testN" "./alloc-test 16"  # 16 is the max for this test
+        else
+          run_test_cmd "alloc-testN" "./alloc-test $procs"
+        fi
+      fi;;
+    larson)
+      local larson_threads=$(( procs > 100 ? 100 : procs ))
+      run_test_cmd "larsonN" "./larson 5 8 1000 5000 100 4141 $larson_threads";;
     larson-sized)
-      run_test_cmd "larsonN-sized" "./larson-sized 5 8 1000 5000 100 4141 $procs";;
+      local larson_threads=$(( procs > 100 ? 100 : procs ))
+      run_test_cmd "larsonN-sized" "./larson-sized 5 8 1000 5000 100 4141 $larson_threads";;
     sh6bench)
       run_test_cmd "sh6benchN" "./sh6bench $procsx2";;
     sh8bench)
