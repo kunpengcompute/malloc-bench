@@ -164,6 +164,9 @@ if test "$use_packages" = "1"; then
   fi
 fi
 
+# Source local allocator definitions (not tracked by git)
+if test -f "../../bench-local.sh"; then source ../../bench-local.sh; fi
+
 readonly luadir="$localdevdir/lua"
 readonly leandir="$localdevdir/lean"
 readonly leanmldir="$leandir/../mathlib"
@@ -327,11 +330,11 @@ while : ; do
     no|off|false) flag_arg="0";;
   esac
 
-  if contains "$alloc_all" "$flag"; then
+  if contains "$alloc_all" "$flag" || { test -n "$flag" && [[ "$alloc_libs" == *"$flag="* ]]; }; then
     if ! contains "$alloc_installed" "$flag"; then
       warning "allocator '$flag' selected but it seems it is not installed ($alloc_installed)"
     fi
-    alloc_run_add_remove "$flag" "$flag_arg"    
+    alloc_run_add_remove "$flag" "$flag_arg"
   else
     if contains "$tests_all" "$flag"; then
       tests_run_add_remove "$flag" "$flag_arg"

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Statistical analysis of benchres.csv:
-1. Compute per-column median across repeated rounds, append to file
-2. Compute MAD (Median Absolute Deviation) = median(|xi-median|)/median * 100%, append to file
-3. Compute ratio of each row vs the first allocator of the same benchmark ((v/v1)-1)*100%, append to file
+1. Group raw rounds by (benchmark, allocator) so repeats sit together for quick eyeballing
+2. Compute per-column median across repeated rounds, append to file
+3. Compute MAD (Median Absolute Deviation) = median(|xi-median|)/median * 100%, append to file
+4. Compute ratio of each row vs the first allocator of the same benchmark ((v/v1)-1)*100%, append to file
 """
 
 import re
@@ -141,11 +142,20 @@ def make_header_line():
         f"{h:>{w}}" for h, w in zip(COL_HEADERS, COL_WIDTHS)
     )
 
+HEADER_GROUPED = "\n# ===== GROUPED RAW ROUNDS (same benchmark+allocator collected together) =====\n" + make_header_line() + "\n"
 HEADER_MEDIAN = "\n# ===== MEDIAN (5 rounds) =====\n" + make_header_line() + "\n"
 HEADER_MAD = "\n# ===== MAD: relative median absolute deviation (MAD/median*100%, 5 rounds) =====\n" + make_header_line() + "\n"
 HEADER_RATIO = "\n# ===== RATIO vs FIRST ALLOCATOR per benchmark (%), (v/v1-1)*100 =====\n" + make_header_line() + "\n"
 
 with csv_path.open("a") as f:
+    # --- grouped raw rounds ---
+    f.write(HEADER_GROUPED)
+    for key in seen:
+        benchmark, allocator = key
+        for round_values in groups[key]:
+            f.write(make_line(benchmark, allocator, round_values, decimals=4) + "\n")
+        f.write("\n")
+
     # --- median table ---
     f.write(HEADER_MEDIAN)
     for key in seen:
@@ -171,6 +181,18 @@ with csv_path.open("a") as f:
 print("Analysis complete. Results appended to:", csv_path)
 
 # ── 8. Print summary to terminal ──────────────────────────────────────────────────
+
+print("\n" + "=" * 70)
+print("GROUPED RAW ROUNDS (same benchmark+allocator collected together)")
+print("=" * 70)
+header = f"{'benchmark':<16} {'alloc':<8} " + " ".join(f"{h:>{w}}" for h, w in zip(COL_HEADERS, COL_WIDTHS))
+print(header)
+print("-" * len(header))
+for key in seen:
+    benchmark, allocator = key
+    for round_values in groups[key]:
+        print(make_line(benchmark, allocator, round_values, decimals=4))
+    print()
 
 print("\n" + "=" * 70)
 print("MEDIAN TABLE (first 2 cols: identifier, rest: per-metric medians)")
