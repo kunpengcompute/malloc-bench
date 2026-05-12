@@ -16,8 +16,9 @@ readonly tests_all1="cfrac espresso barnes redis lean larson-sized mstress rptes
 readonly tests_all2="alloc-test sh6bench sh8bench xmalloc-test cscratch glibc-simple glibc-thread rocksdb"
 readonly tests_all3="larson lean-mathlib linux malloc-large mleak rbstress cthrash"
 readonly tests_all4="z3 spec spec-bench security"
+readonly tests_all5="recommend-like"  # jemalloc-only KPI bench
 
-readonly tests_all="$tests_all1 $tests_all2 $tests_all3 $tests_all4"
+readonly tests_all="$tests_all1 $tests_all2 $tests_all3 $tests_all4 $tests_all5"
 readonly tests_allt="$tests_all1 $tests_all2"  # run with 'allt' command option
 readonly tests_quickt="cfrac alloc-testN larson-sized lean redis rocksdb"  # quick essential benchmarks, run with 'quickt' command option
 
@@ -446,6 +447,7 @@ while : ; do
             echo ""
             echo "further tests:"
             echo "  $tests_all3 $tests_all4"
+            echo "  $tests_all5  (jemalloc-only KPI bench)"
             echo ""
             echo "secure allocators included in 'allsa':"
             echo "  $alloc_secure"
@@ -744,6 +746,10 @@ function run_test {  # <test>
     larson-sized)
       local larson_threads=$(( procs > 100 ? 100 : procs ))
       run_test_cmd "larsonN-sized" "./larson-sized 5 8 1000 5000 100 4141 $larson_threads";;
+    recommend-like)
+      # jemalloc-only; KPI 仅在 LD_PRELOAD myje/myje-base/je 时可信
+      local recommend_threads=$(( procs > 100 ? 100 : procs ))
+      run_test_cmd "recommend-like" "./recommend-like-bench --workset 8 --threads $recommend_threads --duration 60";;
     sh6bench)
       run_test_cmd "sh6benchN" "./sh6bench $procsx2";;
     sh8bench)
