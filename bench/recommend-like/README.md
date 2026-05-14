@@ -71,8 +71,10 @@ WORKSET=8 DURATION=180 NUMA_NODE=2 bench/recommend-like/run_sanity.sh
 ```
 
 环境变量: `WORKSET` (GB) / `THREADS` / `DURATION` (s) / `STAT_PRINT` (s) / `NUMA_NODE` / `MALLOC_CONF`。
-默认 `THREADS=min(nproc,100)`: lab 单 NUMA cpuset 内 nproc=96 自动落到 96; docker / 小机器
-按实际 nproc 取值, 不会过载。
+默认 `THREADS=min(nproc,100)`。`NUMA_NODE` 已设时脚本透过
+`numactl --cpunodebind=$NUMA_NODE -- nproc` 取**有效** cpuset 核数, 避免外层
+shell 拿到宿主全核 (lab 384) 后算出 100 但 cpuset 内只 96 核, 4 线程过载推高
+RSS、把 Allocated/RSS 顶过阈值。docker / 小机器无 NUMA_NODE 时按裸 nproc。
 
 **期望 KPI 范围** (lab 8GB/96t/180s 全部命中):
 
@@ -121,8 +123,9 @@ python3 bench/recommend-like/analyze.py bench/recommend-like/out
 
 环境变量: `ROUNDS` (默认 5) / `WORKSET` (默认 8GB) / `THREADS` (默认 `min(nproc,100)`) /
 `DURATION` (默认 120s) / `STAT_PRINT` (默认 15s) / `NUMA_NODE` / `MALLOC_CONF` /
-`SO_A` / `SO_B0` / `JE_BIN`。默认 `THREADS` 公式在 lab 单 NUMA cpuset 内自动取 96,
-docker / 小机器按实际 nproc 取值。
+`SO_A` / `SO_B0` / `JE_BIN`。`NUMA_NODE` 已设时脚本透过
+`numactl --cpunodebind=$NUMA_NODE -- nproc` 取**有效** cpuset 核数 (lab 单 NUMA
+为 96), 避免外层 shell 拿到宿主全核数 (384) 后 4 线程过载。无 `NUMA_NODE` 时按裸 nproc。
 
 每次跑前 `run.sh` 仅清 `out/{B0,A}-r*.{csv,log}` 4 个 glob, 不动 `sanity.csv` 等无关文件。
 

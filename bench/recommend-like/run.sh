@@ -5,7 +5,8 @@
 # 模拟搜推稳态: dirty_decay_ms=-1, muzzy_decay_ms=-1, narenas=4.
 #
 # 默认: ROUNDS=5 WORKSET=8GB THREADS=min(nproc,100) DURATION=120s
-# (lab 单 NUMA 下 nproc=96 → 自动 96; docker 小机器自动取 nproc)
+# NUMA_NODE 已设时 THREADS 透过 numactl 取有效 cpuset 核数 (lab 单 NUMA = 96);
+# 无 NUMA_NODE 时按裸 nproc (docker / 小机器).
 # 覆盖: SO_A / SO_B0 / NUMA_NODE / MALLOC_CONF 等环境变量.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,11 +14,18 @@ cd "$SCRIPT_DIR"
 
 ROUNDS=${ROUNDS:-5}
 WORKSET=${WORKSET:-8}
-DEFAULT_THREADS=$(( $(nproc) > 100 ? 100 : $(nproc) ))
+NUMA_NODE=${NUMA_NODE:-}
+# DEFAULT_THREADS 必须感知 NUMA_NODE: 裸 nproc 在外层 shell 拿到的是宿主全核数
+# (lab 384), 而进 cpuset 后只有 96 核, min(384,100)=100 会过载推高 RSS。
+if [[ -n "$NUMA_NODE" ]] && command -v numactl >/dev/null 2>&1; then
+  EFFECTIVE_NPROC=$(numactl --cpunodebind="$NUMA_NODE" --membind="$NUMA_NODE" -- nproc)
+else
+  EFFECTIVE_NPROC=$(nproc)
+fi
+DEFAULT_THREADS=$(( EFFECTIVE_NPROC > 100 ? 100 : EFFECTIVE_NPROC ))
 THREADS=${THREADS:-$DEFAULT_THREADS}
 DURATION=${DURATION:-120}
 STAT_PRINT=${STAT_PRINT:-15}
-NUMA_NODE=${NUMA_NODE:-}
 MALLOC_CONF_OPT=${MALLOC_CONF:-"dirty_decay_ms:-1,muzzy_decay_ms:-1,narenas:4"}
 
 # bench 二进制由 malloc-bench CMake 构建产物提供
