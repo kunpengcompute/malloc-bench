@@ -91,3 +91,32 @@ lab numa2 (96 核 / 387GB) 上连续 3 次实测,5 项 KPI 全部 PASS:
 
 9. **NUMA_NODE 参数** — `run_sanity.sh` 接受 `NUMA_NODE=N`,用 `numactl --cpunodebind=N --membind=N` 同时绑 CPU 与内存,排除跨 socket 干扰。lab 上 4 个 NUMA 节点,默认 numa0 与其他实验/服务共享,选 numa2 隔离。
 10. **ChurnRate 上限放宽到 0.999** — worker 在 `bytes_in_flight >= target_bytes` 时强制 free,长跑(180s)饱和 cap 后稳态自然趋近 alloc:free=1:1,churn → 1.0 是物理预期。docker 90s 短跑没触达 cap (~0.97),lab 180s 已饱和(0.997)。原上限 0.99 是 docker 短跑伪信号;0.999 仍可识别 drain-at-exit bug 把 cum_frees 拉到等于 cum_allocs 的 1.0000 退化。以及 0.92-0.999 的边界条件...
+
+## 对比模式 (myje vs myje-base)
+
+回答 "A 相对 B0 在 RSS / dirty / edata / 吞吐 上差多少"。与 `run_sanity.sh` 的形态校验是两条独立路径（CSV 命名分开,共享 `out/`）。
+
+**前提**: 在 `bench-local.sh` 注册好 `myje` / `myje-base`,且对应 .so 已编译:
+
+```bash
+# bench-local.sh
+alloc_lib_add "myje"      "/home/hxq/workspace/jemalloc/lib/libjemalloc.so"
+alloc_lib_add "myje-base" "/home/hxq/workspace/malloc-bench/extern/myje-base/lib/libjemalloc.so"
+```
+
+**运行**:
+
+```bash
+# 默认 5 轮 × 120s × 8GB × 32 线程, 模拟搜推稳态 (decay disabled, narenas=4)
+bench/recommend-like/run.sh
+
+# lab 上推荐: NUMA 节点 2 隔离, 跑满 180s
+WORKSET=8 THREADS=32 DURATION=180 NUMA_NODE=2 bench/recommend-like/run.sh
+
+# 不用 bench-local.sh 注册, 直接传两份 .so
+SO_A=/path/x.so SO_B0=/path/y.so bench/recommend-like/run.sh
+```
+
+**输出**: 9 行 metric 对比表 (rss / allocated / dirty / meta / edata / lex / mid_lg / mops / churn),每行给 B0 / A / delta% ; 末尾 MAD 行展示 run-to-run 噪声。不做 PASS/FAIL — 阈值由消费者自定。
+
+**噪声基线**: 用 `SO_A=$SO_B0` 跑一次 (A 与 B0 指向同一份 .so) 可估出基础噪声;典型 `rss_mb` / `allocated_mb` / `mops` 的 delta 应在 ±2% 以内。
