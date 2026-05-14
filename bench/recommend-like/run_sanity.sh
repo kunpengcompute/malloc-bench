@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 验证 recommend_like_bench 跑出的 KPI 形态匹配搜推请求应用 stat 真实数据。
 #
-# 默认参数:THREADS = min(nproc, 100), workset 2GB, 90s
-# Lab 完整跑:WORKSET=8 THREADS=32 DURATION=180 NUMA_NODE=2
+# 默认参数: THREADS=min(nproc,100) (lab 单 NUMA 下自动 96), WORKSET=2GB, DURATION=90s
+# Lab 完整跑: WORKSET=8 DURATION=180 NUMA_NODE=2
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"

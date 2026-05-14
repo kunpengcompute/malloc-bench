@@ -4,7 +4,8 @@
 # 不 build .so; 直接 LD_PRELOAD bench-local.sh 注册的两份 .so.
 # 模拟搜推稳态: dirty_decay_ms=-1, muzzy_decay_ms=-1, narenas=4.
 #
-# 默认: ROUNDS=5 WORKSET=8GB THREADS=32 DURATION=120s
+# 默认: ROUNDS=5 WORKSET=8GB THREADS=min(nproc,100) DURATION=120s
+# (lab 单 NUMA 下 nproc=96 → 自动 96; docker 小机器自动取 nproc)
 # 覆盖: SO_A / SO_B0 / NUMA_NODE / MALLOC_CONF 等环境变量.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +13,8 @@ cd "$SCRIPT_DIR"
 
 ROUNDS=${ROUNDS:-5}
 WORKSET=${WORKSET:-8}
-THREADS=${THREADS:-32}
+DEFAULT_THREADS=$(( $(nproc) > 100 ? 100 : $(nproc) ))
+THREADS=${THREADS:-$DEFAULT_THREADS}
 DURATION=${DURATION:-120}
 STAT_PRINT=${STAT_PRINT:-15}
 NUMA_NODE=${NUMA_NODE:-}
