@@ -1,10 +1,11 @@
 # Bench Recommend-Like
 
 模拟搜推请求类应用 (短生命周期、高 churn、稳态 dirty 不回收) 的 jemalloc allocator 微基准。
-两条独立用途:
+三条独立入口:
 
-1. **Sanity 模式** (`run_sanity.sh`) — 验证 bench 跑出的 KPI 形态符合真实服务 stat 数据。
+1. **Sanity 模式** (`run_sanity.sh`) — 验证 bench 跑出的 KPI 形态符合真实服务 stat 数据, 末尾 PASS/FAIL。
 2. **对比模式** (`run.sh`) — 同一份 bench, B0 (baseline) vs A (待评估) 多轮 LD_PRELOAD 切换, 输出 metric 中位数 + delta% + MAD 噪声。
+3. **bench.sh 集成入口** — 与 mimalloc-bench 主流程对接, 用 `../../bench.sh <jealloc> recommend-like` 把单次跑结果写进 `benchres.csv` (供 `graphs.py` 出图)。仅接受 jemalloc 系 allocator (白名单过滤, 见下)。
 
 ## Jemalloc-Only
 
@@ -14,7 +15,8 @@ bench 二进制编译期链接 jemalloc, 通过 `mallctl()` / `malloc_stats_prin
 LD_PRELOAD 切到非 jemalloc allocator (tcmalloc / mimalloc / glibc) 时, `malloc/free` 被替换
 但 `mallctl` 仍解析到链接进来的 libjemalloc.so, stats 与实际 malloc 分裂, **KPI 数据不可信**。
 
-因此本 case 不进 `tests_quickt` 默认套件, 仅以 jemalloc 系 allocator 调用。
+因此本 case 不进 `tests_quickt` 默认套件, 仅以 jemalloc 系 allocator 调用 — 见下文
+"bench.sh 集成入口" 的白名单过滤。
 
 ## 文件清单
 
@@ -26,6 +28,7 @@ LD_PRELOAD 切到非 jemalloc allocator (tcmalloc / mimalloc / glibc) 时, `mall
 | `run.sh`                   | B0 vs A × ROUNDS 轮 driver, 收尾调 `analyze.py`                       |
 | `analyze.py`               | 多轮 CSV 聚合, 输出 9 行 metric 中位数对比表 + MAD/median 段           |
 | `test_analyze.py`          | `analyze.py` 的单例测试 (14 case, 纯 stdlib): 锁 CSV 13 列契约 + MAD/median 百分比格式 + 禁 PASS/FAIL |
+| `../../bench.sh` recommend-like 分支 | 把本 case 接进 mimalloc-bench 主流程, 内含 jemalloc 系白名单过滤 + skip warning |
 
 ## 构建 bench 二进制 (一次性)
 
@@ -122,6 +125,40 @@ python3 bench/recommend-like/analyze.py bench/recommend-like/out
 docker / 小机器按实际 nproc 取值。
 
 每次跑前 `run.sh` 仅清 `out/{B0,A}-r*.{csv,log}` 4 个 glob, 不动 `sanity.csv` 等无关文件。
+
+## bench.sh 集成入口: 与主流程对接
+
+`recommend-like` 注册在 `tests_all5`, 用 mimalloc-bench 主入口 `bench.sh` 跑时, 把
+elapsed / RSS / page-faults 等 7 列汇总写进 `out/bench/benchres.csv`, 与其他 bench
+统一出图。**不**走 `run_sanity.sh` 那套 KPI 形态校验 — 那个仍由 sanity 入口完成。
+
+### 仅 jemalloc 系 allocator (白名单过滤)
+
+由于 bench 二进制编译期硬链 jemalloc 取 `mallctl`, LD_PRELOAD 非 jemalloc 系
+allocator 时 stats 不可信 — 进 `bench.sh` 时会被白名单过滤掉, 并打 `warning`
+跳过整轮:
+
+```bash
+# 默认白名单: je myje myje-base
+cd out/bench
+../../bench.sh je recommend-like              # OK, 跑
+../../bench.sh myje myje-base recommend-like  # OK, 跑两轮 (用 bench-local.sh 注册的)
+../../bench.sh tc mi recommend-like           # 全部被过滤 → warning + skip
+../../bench.sh mi je recommend-like           # 仅 je 进入, mi 被过滤
+```
+
+覆盖白名单 (例如再加 `xje` 一类自定义 jemalloc fork):
+
+```bash
+RECOMMEND_LIKE_ALLOCS="je myje myje-base xje" ../../bench.sh xje recommend-like
+```
+
+### 默认参数
+
+`bench.sh` 入口跑 `recommend-like-bench --workset 8 --threads min(procs,100) --duration 60`。
+其中 `procs` 来自 `bench.sh --procs=N` 或 `nproc`。`--duration 60` 偏短: 仅作为
+统一出图的"够用值", **不**保证 dirty 累积到 spec 区间; 想看完整 KPI 形态请走
+`run_sanity.sh` 或 `run.sh`。
 
 ## 输出位置
 

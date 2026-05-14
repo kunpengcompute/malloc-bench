@@ -747,9 +747,26 @@ function run_test {  # <test>
       local larson_threads=$(( procs > 100 ? 100 : procs ))
       run_test_cmd "larsonN-sized" "./larson-sized 5 8 1000 5000 100 4141 $larson_threads";;
     recommend-like)
-      # jemalloc-only; KPI 仅在 LD_PRELOAD myje/myje-base/je 时可信
+      # jemalloc-only: the bench links jemalloc at compile time for mallctl/stats;
+      # under a non-jemalloc allocator, stats and malloc/free diverge so KPIs are
+      # untrustworthy. Default whitelist is je/myje/myje-base; override via the
+      # RECOMMEND_LIKE_ALLOCS env var (space-separated).
+      local je_allocs="${RECOMMEND_LIKE_ALLOCS:-je myje myje-base}"
+      local filtered=""
+      for a in $alloc_run; do
+        if contains "$je_allocs" "$a"; then
+          filtered="$filtered $a"
+        fi
+      done
+      if [ -z "$filtered" ]; then
+        warning "recommend-like: only jemalloc-family allocators supported ($je_allocs); current alloc_run='$alloc_run', skipped"
+        return
+      fi
+      local saved_alloc_run="$alloc_run"
+      alloc_run="$filtered"
       local recommend_threads=$(( procs > 100 ? 100 : procs ))
-      run_test_cmd "recommend-like" "./recommend-like-bench --workset 8 --threads $recommend_threads --duration 60";;
+      run_test_cmd "recommend-like" "./recommend-like-bench --workset 8 --threads $recommend_threads --duration 60"
+      alloc_run="$saved_alloc_run";;
     sh6bench)
       run_test_cmd "sh6benchN" "./sh6bench $procsx2";;
     sh8bench)
