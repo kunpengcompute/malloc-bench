@@ -94,15 +94,26 @@ lab numa2 (96 核 / 387GB) 上连续 3 次实测,5 项 KPI 全部 PASS:
 
 ## 对比模式 (myje vs myje-base)
 
-回答 "A 相对 B0 在 RSS / dirty / edata / 吞吐 上差多少"。与 `run_sanity.sh` 的形态校验是两条独立路径（CSV 命名分开,共享 `out/`）。
+回答 "A 相对 B0 在 RSS / dirty / edata / 吞吐 上差多少"。与 `run_sanity.sh` 的形态校验是两条独立路径(CSV 命名分开, 共享 `out/`)。
 
-**前提**: 在 `bench-local.sh` 注册好 `myje` / `myje-base`,且对应 .so 已编译:
+**新增文件**:
+- `run.sh` — B0 (myje-base) vs A (myje) × ROUNDS 轮 driver。负责: 从 `bench-local.sh` 解析两份 .so / 预检 bench 二进制与 .so / 多轮 LD_PRELOAD 调度 bench / 收尾调 `analyze.py`。可执行。
+- `analyze.py` — 多轮 CSV 聚合, 输出 9 行 metric 对比表 + MAD/median 噪声指标, 不做 PASS/FAIL。可独立调用对已有 `out/` 重新算。
+- `test_analyze.py` — `analyze.py` 单测 (14 个 case, 纯 stdlib)。
 
-```bash
-# bench-local.sh
-alloc_lib_add "myje"      "/home/hxq/workspace/jemalloc/lib/libjemalloc.so"
-alloc_lib_add "myje-base" "/home/hxq/workspace/malloc-bench/extern/myje-base/lib/libjemalloc.so"
-```
+**前提**:
+
+1) `recommend-like-bench` 二进制已 build (一次性):
+   ```bash
+   cd out/bench && cmake ../../bench && make -j$(nproc) recommend-like-bench
+   ```
+   非默认 jemalloc 路径需要传 `-DJEMALLOC_PREFIX=/path/to/jemalloc`。
+
+2) `bench-local.sh` 注册好 `myje` / `myje-base` 路径 (或直接用 `SO_A` / `SO_B0` env 覆盖):
+   ```bash
+   alloc_lib_add "myje"      "/path/to/jemalloc-experimental/lib/libjemalloc.so"
+   alloc_lib_add "myje-base" "/path/to/myje-base/lib/libjemalloc.so"
+   ```
 
 **运行**:
 
@@ -110,13 +121,84 @@ alloc_lib_add "myje-base" "/home/hxq/workspace/malloc-bench/extern/myje-base/lib
 # 默认 5 轮 × 120s × 8GB × 32 线程, 模拟搜推稳态 (decay disabled, narenas=4)
 bench/recommend-like/run.sh
 
-# lab 上推荐: NUMA 节点 2 隔离, 跑满 180s
-WORKSET=8 THREADS=32 DURATION=180 NUMA_NODE=2 bench/recommend-like/run.sh
+# lab 上推荐: 绑 NUMA 节点 2 (96 核), 32 线程 (1/3 负载, 低争用基线)
+WORKSET=8 THREADS=32 DURATION=120 NUMA_NODE=2 bench/recommend-like/run.sh
 
-# 不用 bench-local.sh 注册, 直接传两份 .so
+# 满 NUMA 域 (96 核 = NUMA node 2 全核, 满负载)
+WORKSET=8 THREADS=96 DURATION=120 NUMA_NODE=2 bench/recommend-like/run.sh
+
+# 显式传两份 .so, 跳过 bench-local.sh 解析 (或用于噪声基线: SO_A=$SO_B0)
 SO_A=/path/x.so SO_B0=/path/y.so bench/recommend-like/run.sh
+
+# 单跑 analyze 重新算已有 CSV (不再起 bench)
+python3 bench/recommend-like/analyze.py bench/recommend-like/out
+
+# 单测
+python3 bench/recommend-like/test_analyze.py
 ```
 
-**输出**: 9 行 metric 对比表 (rss / allocated / dirty / meta / edata / lex / mid_lg / mops / churn),每行给 B0 / A / delta% ; 末尾 MAD 行展示 run-to-run 噪声。不做 PASS/FAIL — 阈值由消费者自定。
+**输出文件**:
 
-**噪声基线**: 用 `SO_A=$SO_B0` 跑一次 (A 与 B0 指向同一份 .so) 可估出基础噪声;典型 `rss_mb` / `allocated_mb` / `mops` 的 delta 应在 ±2% 以内。
+- `out/{B0,A}-r{1..ROUNDS}.csv` — 每轮 CSV (KB 单位, 13 列):
+  ```
+  t_sec, rss_kb, active_kb, allocated_kb, dirty_kb, metadata_kb, edata_kb,
+  lex_native, alloc_mid_large, cum_allocs, cum_frees,
+  nmalloc_per_sec, ndalloc_per_sec
+  ```
+  每 `STAT_PRINT` 秒采样一行 (默认 15s → 120s/轮 = 8 行 + header)。
+- `out/{B0,A}-r{1..ROUNDS}.log` — 每轮 bench stderr (含末尾 `malloc_stats_print()` 全量快照)。
+- stdout: 9 行 metric 对比表 + MAD/median 段 (见下方)。
+
+每次跑前 `run.sh` 只清 `{B0,A}-r*.{csv,log}` 这 4 个 glob, 不动 `sanity.csv` 等无关文件。
+
+**对比表 9 行 metric**:
+
+| metric        | 含义                                              | 取值方式        |
+|---------------|---------------------------------------------------|-----------------|
+| rss_mb        | 物理常驻 (`stats.resident`)                       | 后 70% 中位数   |
+| allocated_mb  | 用户视角 live bytes (`stats.allocated`)           | 后 70% 中位数   |
+| dirty_mb      | dirty pages (`resident - active - metadata`)      | 后 70% 中位数   |
+| meta_mb       | 元数据总开销 (`stats.metadata`)                   | 后 70% 中位数   |
+| edata_mb      | extent metadata pool (`stats.metadata_edata`)     | 后 70% 中位数   |
+| lex           | 16-32K 真实 lextents (4K-page 下非零)             | 后 70% 中位数   |
+| mid_lg        | 累计 16-32K alloc 次数 (worker 计数, 跨 page)     | 末行末值        |
+| mops          | M-allocs/s 吞吐                                   | 后 70% 中位数   |
+| churn         | `cum_frees / cum_allocs` (alloc:free 平衡)        | 末行末值        |
+
+每行给 `B0 / A / delta vs B0%`。**不做 PASS/FAIL** — 阈值由消费者自定。
+
+**MAD/median 段**: 哨兵指标 (`rss_mb` + `mops`) 跨轮稳定性, MAD 除以 median 转百分比, **<2% 视为稳定**。delta 量级远超 MAD/median 时才是可信信号。
+
+**噪声基线**: 用 `SO_A=$SO_B0` 跑一次 (A 与 B0 指向同一份 .so) 估基础噪声; 典型 `rss_mb` / `allocated_mb` / `mops` 的 delta 应在 ±2% 以内。
+
+**参考基线 (lab `NUMA_NODE=2`, 5 轮 × 120s × 8GB, 2026-05-13/14)**
+
+A = `opt/exp-large-slab-32k` (启用 `--enable-extended-small-bins`)
+B0 = `myje-base` (上游 dev)
+
+`THREADS=32` (NUMA 域 1/3 负载, 低争用):
+
+| metric       |       B0 |        A | delta   |
+|--------------|---------:|---------:|--------:|
+| rss_mb       | 11712.29 | 11632.14 | -0.68%  |
+| dirty_mb     |  1177.38 |  1085.84 | -7.78%  |
+| meta_mb      |   158.18 |   156.31 | -1.18%  |
+| mops         | 152.7973 | 152.6190 | -0.12%  |
+| MAD/median rss_mb |   0.41% | 0.27% |       |
+| MAD/median mops   |   1.12% | 0.51% |       |
+
+`THREADS=96` (NUMA 域满核, 高争用):
+
+| metric       |       B0 |        A | delta   |
+|--------------|---------:|---------:|--------:|
+| rss_mb       | 11860.85 | 11908.83 | +0.40%  |
+| dirty_mb     |  1868.91 |  1920.86 | +2.78%  |
+| meta_mb      |   162.09 |   162.13 | +0.03%  |
+| mops         | 305.0034 | 304.0629 | -0.31%  |
+| MAD/median rss_mb |   0.10% | 0.10% |       |
+| MAD/median mops   |   0.56% | 0.30% |       |
+
+观察:
+- 32t→96t 吞吐 ~2× 线性 scale (NUMA 域内多线程扩展良好)
+- A 在 32t 下 `dirty_mb` 显著降 (-7.78%, 强信号); 96t 满核时反转 (+2.78%, 弱信号)
+- 96t 满核下 A 对内存指标无显著优势, 吞吐持平 — large-slab-32k 优化的适用边界是中低并发场景
