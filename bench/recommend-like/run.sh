@@ -26,7 +26,16 @@ DEFAULT_THREADS=$(( EFFECTIVE_NPROC > 100 ? 100 : EFFECTIVE_NPROC ))
 THREADS=${THREADS:-$DEFAULT_THREADS}
 DURATION=${DURATION:-120}
 STAT_PRINT=${STAT_PRINT:-15}
-MALLOC_CONF_OPT=${MALLOC_CONF:-"dirty_decay_ms:-1,muzzy_decay_ms:-1,narenas:4"}
+MALLOC_CONF_OPT=${MALLOC_CONF:-"dirty_decay_ms:-1,muzzy_decay_ms:-1,narenas:96"}
+
+# PROD_LIKE=1 (默认) 启用 disable_tcache, 让 ≤32K dirty 形态接近生产 je_log_2752193 样本.
+# 实测 lab 8GB/96t/120s: ≤32K ndirty 1848 → 31101 (16.8×), 形态从 1.4% 涨到 7% 占总 dirty.
+# 设为 0 切回老 baseline (tcache:true), 用于对照 jemalloc 默认行为的优化效果.
+PROD_LIKE=${PROD_LIKE:-1}
+# 等价"请求级 alloc/free 时序"模拟. 0=老 random 路径 (与 disable_tcache 配合反而效果更好,
+# 见 README "模式选择" 段). 默认 0 = 不启用 batch.
+BATCH_SIZE=${BATCH_SIZE:-0}
+BATCH_KEEP_PCT=${BATCH_KEEP_PCT:-0.05}
 
 # bench 二进制由 malloc-bench CMake 构建产物提供
 JE_BIN=${JE_BIN:-"$SCRIPT_DIR/../../out/bench/recommend-like-bench"}
@@ -77,6 +86,7 @@ mkdir -p out
 
 echo "config: ROUNDS=$ROUNDS WORKSET=${WORKSET}GB THREADS=$THREADS DURATION=${DURATION}s STAT_PRINT=${STAT_PRINT}s"
 echo "MALLOC_CONF=$MALLOC_CONF_OPT"
+echo "PROD_LIKE=$PROD_LIKE  BATCH_SIZE=$BATCH_SIZE"
 echo "SO_B0=$SO_B0"
 echo "SO_A =$SO_A"
 [[ ${#NUMA_PREFIX[@]} -gt 0 ]] && echo "NUMA: ${NUMA_PREFIX[*]}"
@@ -87,10 +97,14 @@ find out -maxdepth 1 \( -name "B0-r*.csv" -o -name "A-r*.csv" \
 run_one() {
   local cfg=$1 so=$2 r=$3
   echo "  $cfg round $r"
+  local extra=()
+  [[ "$PROD_LIKE" == "1" ]] && extra+=("--disable-tcache")
+  [[ "$BATCH_SIZE" -gt 0 ]] && extra+=("--batch-size" "$BATCH_SIZE" "--batch-keep-pct" "$BATCH_KEEP_PCT")
   LD_PRELOAD="$so" MALLOC_CONF="$MALLOC_CONF_OPT" \
     "${NUMA_PREFIX[@]}" "$JE_BIN" \
       --workset "$WORKSET" --threads "$THREADS" --duration "$DURATION" \
       --stat-print "$STAT_PRINT" --csv "out/$cfg-r$r.csv" \
+      "${extra[@]}" \
     > "out/$cfg-r$r.log" 2>&1
 }
 

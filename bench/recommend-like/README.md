@@ -18,6 +18,49 @@ LD_PRELOAD 切到非 jemalloc allocator (tcmalloc / mimalloc / glibc) 时, `mall
 因此本 case 不进 `tests_quickt` 默认套件, 仅以 jemalloc 系 allocator 调用 — 见下文
 "bench.sh 集成入口" 的白名单过滤。
 
+## 生产形态对齐 (≤32K dirty)
+
+bench 设计目标是复现 `je_log_2752193_pr14_core.txt` 的 `extents:` 段 ≤32K dirty 分布
+(4K 主导 62% + 8K 19% + 12K 15%, 共 2 047 950 个 ≤32K dirty extent).
+
+默认 jemalloc tcache:true 配置下, bench 跑 120s 累计的 ≤32K dirty 远低于生产 (仅
+1848 个), 因为 **tcache 缓冲了 small free 的时序**, slab 整空事件极少触发. 多种代码层
+干预实测效果对照 (lab 8GB / 96 threads / 120s, MALLOC_CONF=`narenas:96,decay=-1`):
+
+| 配置 | ≤32K ndirty | 4K ndirty | 主要短板 |
+|------|------------:|----------:|---------|
+| baseline (random, tcache:true) | 1 848 | 1 295 | 远不及生产 |
+| `--batch-size 128` | 212 | 126 | tcache 仍拦截 |
+| `--batch-size 128 --flush-tcache-every 1` | 139 | 86 | flush 后立刻被复用 |
+| `--phase-count 4 --phase-rotate-each 50000` | 186 | 143 | tcache 跨 phase 拍平 idle |
+| MALLOC_CONF + `tcache:false` | 15 285 | 8 803 | 8× baseline, 形态接近 |
+| **`--disable-tcache` (per-thread mallctl)** | **31 101** | **22 648** | **16× baseline, 推荐** |
+| 生产 je_log_2752193 (参考) | 2 047 950 | 1 255 459 | bench/prod ≈ 1/66 |
+
+**关键设计 trade-off**: bench 受限 120s, 无法复现生产 28 min 累积. tcache:true 下,
+小 size free 在 tcache 层批量交换, arena bin 不见集中 free → slab 几乎不整空 → ≤32K
+dirty 不沉淀. `disable_tcache` 让 free 直接进 arena bin slab, 复现生产 dirty 形态.
+
+虽然 bench 的 jemalloc 状态 (tcache=disabled) 与生产 (tcache=true) 不一致, 但 bench
+评估的是 **ecache 子系统的优化** (如 `9e53920d` short_decay), 这条优化路径只依赖 dirty
+pool 内容. dirty 形态对齐就够了, tcache 状态不影响优化的代表性.
+
+## CLI 参数
+
+`recommend_like_bench` 接受的参数 (除 workset/threads/duration/csv 等基础项):
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--churn-rate F` | 0.95 | 仅 `batch-size=0` 生效, 控制 random 模式 alloc 概率 |
+| `--batch-size K` | 0 | 0=老 random 路径; >0=每 K 个 alloc 为一"请求", 集中 free |
+| `--batch-keep-pct F` | 0.05 | 仅 `batch-size>0`, batch 对象进长尾池概率 |
+| `--flush-tcache-every N` | 0 | 仅 `batch-size>0`, 每 N batch 调 `thread.tcache.flush` (实测无用, 留作对照) |
+| `--disable-tcache` | off | worker 启动时 `mallctl("thread.tcache.enabled", false)`. **推荐开** |
+| `--phase-count K` | 0 | 0=禁用; >0=worker 仅 alloc SIZE_DIST 的 1/K 子集, 按时间旋转 |
+| `--phase-rotate-each N` | 100000 | 仅 `phase-count>0`, 每 N alloc 后 worker 旋转 phase |
+
+run.sh / sanity 默认 `PROD_LIKE=1` 即开启 `--disable-tcache`. 切回 baseline 用 `PROD_LIKE=0`.
+
 ## 文件清单
 
 | 文件                       | 作用                                                                 |
@@ -105,7 +148,7 @@ alloc_lib_add "myje-base" "/path/to/jemalloc-base/lib/libjemalloc.so"
 **运行**:
 
 ```bash
-# 默认 5 轮 × 120s × 8GB × min(nproc,100) 线程, 稳态配置 (decay disabled, narenas=4)
+# 默认 5 轮 × 120s × 8GB × min(nproc,100) 线程, 稳态配置 (decay disabled, narenas=96, disable_tcache)
 bench/recommend-like/run.sh
 
 # lab 推荐: 绑 NUMA node 2 (cpuset 限制后 nproc=96, 默认 THREADS 自动取 96 即满负载)
@@ -123,7 +166,8 @@ python3 bench/recommend-like/analyze.py bench/recommend-like/out
 
 环境变量: `ROUNDS` (默认 5) / `WORKSET` (默认 8GB) / `THREADS` (默认 `min(nproc,100)`) /
 `DURATION` (默认 120s) / `STAT_PRINT` (默认 15s) / `NUMA_NODE` / `MALLOC_CONF` /
-`SO_A` / `SO_B0` / `JE_BIN`。`NUMA_NODE` 已设时脚本透过
+`SO_A` / `SO_B0` / `JE_BIN` / `PROD_LIKE` (默认 1, 启用 disable_tcache) /
+`BATCH_SIZE` (默认 0=老 random) / `BATCH_KEEP_PCT` (默认 0.05)。`NUMA_NODE` 已设时脚本透过
 `numactl --cpunodebind=$NUMA_NODE -- nproc` 取**有效** cpuset 核数 (lab 单 NUMA
 为 96), 避免外层 shell 拿到宿主全核数 (384) 后 4 线程过载。无 `NUMA_NODE` 时按裸 nproc。
 

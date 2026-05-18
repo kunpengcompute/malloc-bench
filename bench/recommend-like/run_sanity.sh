@@ -45,15 +45,22 @@ STAT_PRINT=${STAT_PRINT:-15}
 # narenas=4 < threads=8 让 arena 处于高 churn 状态.
 MALLOC_CONF_OPT=${MALLOC_CONF:-"dirty_decay_ms:-1,muzzy_decay_ms:-1,narenas:4"}
 
+# sanity 默认 PROD_LIKE=0 (老 random baseline): check_kpi.py 阈值是按此校准的.
+# PROD_LIKE=1 启用 disable_tcache → ≤32K dirty 形态接近生产, 但 RSS/Dirty 比例
+# 会改变, 老阈值会 FAIL. 想跑 prod-like 形态请用 run.sh (对比模式) 而非 sanity.
+PROD_LIKE=${PROD_LIKE:-0}
+EXTRA=()
+[[ "$PROD_LIKE" == "1" ]] && EXTRA+=("--disable-tcache")
+
 CSV=out/sanity.csv
 LOG=out/sanity.log
 
-echo "MALLOC_CONF=$MALLOC_CONF_OPT"
+echo "MALLOC_CONF=$MALLOC_CONF_OPT  PROD_LIKE=$PROD_LIKE"
 [[ ${#NUMA_PREFIX[@]} -gt 0 ]] && echo "NUMA: ${NUMA_PREFIX[*]}"
-echo "Running: $JE_BIN --workset $WORKSET --threads $THREADS --duration $DURATION --stat-print $STAT_PRINT"
+echo "Running: $JE_BIN --workset $WORKSET --threads $THREADS --duration $DURATION --stat-print $STAT_PRINT ${EXTRA[*]}"
 MALLOC_CONF="$MALLOC_CONF_OPT" \
     "${NUMA_PREFIX[@]}" "$JE_BIN" --workset "$WORKSET" --threads "$THREADS" --duration "$DURATION" \
-        --stat-print "$STAT_PRINT" --csv "$CSV" > "$LOG" 2>&1
+        --stat-print "$STAT_PRINT" --csv "$CSV" "${EXTRA[@]}" > "$LOG" 2>&1
 
 echo "--- last 3 CSV rows ---"
 tail -3 "$CSV"

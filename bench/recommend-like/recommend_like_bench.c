@@ -137,15 +137,20 @@ alias_destroy(alias_table_t *t) {
 }
 
 typedef struct {
-	void   **live;          /* live ptrs 数组 */
+	void   **live;          /* live ptrs 数组 (兼老路径; batch 模式下作长尾池) */
 	size_t  *live_size;     /* 每个 ptr 的 size */
 	uint32_t cap;           /* live 数组容量 */
 	uint32_t n_live;        /* 当前 live 数量 */
+	/* batch 模式专用 buffer (老路径下 batch_buf=NULL) */
+	void   **batch_buf;     /* 当前请求内的临时 ptrs */
+	size_t  *batch_szs;     /* 当前请求内的临时 sizes */
 	uint64_t allocs;
 	uint64_t frees;
 	uint64_t alloc_bytes;       /* 累计 alloc 字节 */
 	uint64_t alloc_mid_large;   /* 16K-32K 累计 alloc 次数 */
 	uint64_t bytes_in_flight;
+	uint32_t cur_phase;         /* phase rotation: 当前 phase id, 起始 = id % K */
+	uint64_t allocs_in_phase;   /* 当前 phase 累计 alloc, 超 phase_rotate_each 旋转 */
 	pcg32_t  rng;
 } worker_t;
 
@@ -157,16 +162,55 @@ typedef struct {
 	uint64_t seed;
 	const char *csv_path;
 	uint32_t stat_print_s;
+	/* batch 模式: 模拟"请求级 alloc 一批 → 全批 free", 制造 slab 时序集中
+	 * batch_size=0  → 走老的独立同分布 random alloc/free 路径
+	 * batch_size>0  → 走 batched 路径: 每轮 alloc K 个 → 处理 → free (keep_pct 留长尾池)
+	 * batch_keep_pct: 每个 batch 对象进长尾的概率, 模拟跨请求缓存 (推荐 0.05) */
+	uint32_t batch_size;
+	double   batch_keep_pct;
+	/* tcache 周期性 flush: 模拟生产 thread 在请求边界 yield tcache 给 arena.
+	 * 默认 0=不主动 flush (依赖 jemalloc 自然 flush). >0 = 每 N 个 batch 调
+	 * mallctl("thread.tcache.flush"). 强制 free 进 arena bin → 提高 slab 整空概率
+	 * → ≤32K dirty 沉淀. 实测单独此项不足以让小 extent 走 dirty (jemalloc 倾向 retain). */
+	uint32_t flush_tcache_every;
+	/* disable_tcache: worker 启动时调 mallctl("thread.tcache.enabled", false),
+	 * per-thread 关闭 tcache. 这是 bench 在 120s 限制下复现生产 ≤32K dirty 形态
+	 * 的关键: tcache 缓存 small free, 让 arena bin 看到的 free 时序被 buffer 拍平,
+	 * slab 不会出现 "短时间所有 reg 被 free" 的整空事件 → ≤32K dirty 不沉淀.
+	 * 关 tcache 后 free 直接到 arena bin slab, slab 整空概率高 → ≤32K dirty 涨.
+	 * 实测 lab 8GB/96t/120s: 启用前 ≤32K ndirty=1848, 启用后 ~15000 (8× 接近生产形态). */
+	uint32_t disable_tcache;
+	/* phase rotation: 让每 worker 在不同时段只 alloc SIZE_DIST 的子集.
+	 * 模拟生产 thread 处理请求时 size 不均匀 + 阶段切换. 暂停 alloc 的 size 上
+	 * 对应 slab 没有新 alloc 拉回, 沉淀 ecache_dirty.
+	 * phase_count=0  → 单 SIZE_DIST 全表 (默认, 老行为)
+	 * phase_count=K  → 建 K 个 alias_table, phase k 用 SIZE_DIST[i] where i%K==k.
+	 *                  worker w 起始 phase = w % K (错开). 每 phase_rotate_each 个
+	 *                  alloc 后旋转到下一 phase. 全局 byte share 不变. */
+	uint32_t phase_count;
+	uint32_t phase_rotate_each;
 	alias_table_t at;
+	alias_table_t *phase_at;  /* phase_count>0 时 = K 个表, 否则 NULL */
 	atomic_int   running;
 } bench_config_t;
 
 static bench_config_t g_cfg;
 
-static void *
-worker_main(void *arg) {
-	worker_t *w = (worker_t *)arg;
-	size_t target_bytes = (size_t)g_cfg.workset_gb * 1024 * 1024 * 1024 / g_cfg.threads;
+/* 返回当前 worker 应当采样的 alias_table.
+ * phase_count==0 时直接用全表; phase_count>0 时按 phase_rotate_each 旋转 phase. */
+static inline const alias_table_t *
+worker_at(worker_t *w) {
+	if (g_cfg.phase_count == 0) return &g_cfg.at;
+	if (++w->allocs_in_phase >= g_cfg.phase_rotate_each) {
+		w->cur_phase = (w->cur_phase + 1) % g_cfg.phase_count;
+		w->allocs_in_phase = 0;
+	}
+	return &g_cfg.phase_at[w->cur_phase];
+}
+
+/* 老路径: random alloc/free 独立同分布. 不会制造 slab 时序集中, 适合做 baseline. */
+static void
+worker_loop_random(worker_t *w, size_t target_bytes) {
 	/* alloc 概率 = 1/(1+churn_rate), 使稳态 ndalloc/nmalloc ≈ churn_rate
 	 * 例: churn_rate=0.95 → alloc_prob=0.5128, free 比 alloc 少 ~5%, n_live 缓慢增长 */
 	double alloc_prob = 1.0 / (1.0 + g_cfg.churn_rate);
@@ -177,7 +221,7 @@ worker_main(void *arg) {
 		             || (w->n_live == 0);
 
 		if (do_alloc) {
-			size_t sz = alias_sample(&g_cfg.at, &w->rng);
+			size_t sz = alias_sample(worker_at(w), &w->rng);
 			void *p = malloc(sz);
 			if (p == NULL) continue;
 			memset(p, 0xa5, sz < 64 ? sz : 64);
@@ -214,7 +258,95 @@ worker_main(void *arg) {
 			w->frees++;
 		}
 	}
+}
 
+/* batch 模式: 每轮 alloc K 个 (一个 "request") → 处理 → 大部分立即 free,
+ * keep_pct 比例转入长尾 live 池模拟跨请求缓存. 长尾池超出 target_bytes 时随机淘汰.
+ * 这模拟搜推后端常见的 "请求级对象池" pattern: 短命对象集中 alloc/free 会让
+ * 同一 slab 的 reg 大批量同步被 free, 触发整 slab 进入 ecache_dirty (生产
+ * 2M 个 ≤32K dirty extent 就是这么产的). */
+static void
+worker_loop_batch(worker_t *w, size_t target_bytes) {
+	uint32_t K = g_cfg.batch_size;
+	double keep = g_cfg.batch_keep_pct;
+	uint32_t flush_every = g_cfg.flush_tcache_every;
+	uint64_t batches_since_flush = 0;
+
+	while (atomic_load_explicit(&g_cfg.running, memory_order_relaxed)) {
+		/* 1. 一批 K 个 alloc, 集中存到 batch_buf */
+		uint32_t n_alloc = 0;
+		for (uint32_t i = 0; i < K; i++) {
+			size_t sz = alias_sample(worker_at(w), &w->rng);
+			void *p = malloc(sz);
+			if (p == NULL) continue;
+			memset(p, 0xa5, sz < 64 ? sz : 64);
+			w->batch_buf[n_alloc] = p;
+			w->batch_szs[n_alloc] = sz;
+			n_alloc++;
+			w->bytes_in_flight += sz;
+			w->allocs++;
+			w->alloc_bytes += sz;
+			if (sz >= 16384 && sz <= 32768) {
+				w->alloc_mid_large++;
+			}
+		}
+
+		/* 2. free 整批: keep 比例进长尾池, 余下立即 free */
+		for (uint32_t i = 0; i < n_alloc; i++) {
+			bool survive = (pcg32_double(&w->rng) < keep);
+			if (survive) {
+				if (w->n_live >= w->cap) {
+					uint32_t newcap = w->cap * 2;
+					void **nl = realloc(w->live, newcap * sizeof(void *));
+					size_t *ns = realloc(w->live_size, newcap * sizeof(size_t));
+					if (nl == NULL || ns == NULL) {
+						fprintf(stderr, "realloc failed (newcap=%u)\n", newcap);
+						abort();
+					}
+					w->live = nl; w->live_size = ns; w->cap = newcap;
+				}
+				w->live[w->n_live]      = w->batch_buf[i];
+				w->live_size[w->n_live] = w->batch_szs[i];
+				w->n_live++;
+			} else {
+				free(w->batch_buf[i]);
+				w->bytes_in_flight -= w->batch_szs[i];
+				w->frees++;
+			}
+		}
+
+		/* 3. 长尾池超 target 时, 随机淘汰旧对象 (LRU 不必要, 随机即可保持稳态) */
+		while (w->bytes_in_flight > target_bytes && w->n_live > 0) {
+			uint32_t idx = pcg32_bounded(&w->rng, w->n_live);
+			size_t sz = w->live_size[idx];
+			free(w->live[idx]);
+			w->bytes_in_flight -= sz;
+			w->frees++;
+			w->n_live--;
+			w->live[idx]      = w->live[w->n_live];
+			w->live_size[idx] = w->live_size[w->n_live];
+		}
+
+		/* 4. 周期 flush tcache: 模拟生产 thread 在请求边界把 tcache 缓存的 free
+		 * 对象批量交还 arena bin. 触发 arena bin 上一批 slab 整空 → ecache_dirty.
+		 * 这是 bench 用 tcache:true 仍能产生 ≤32K dirty 累积的关键. */
+		if (flush_every > 0 && ++batches_since_flush >= flush_every) {
+			mallctl("thread.tcache.flush", NULL, NULL, NULL, 0);
+			batches_since_flush = 0;
+		}
+	}
+}
+
+static void *
+worker_main(void *arg) {
+	worker_t *w = (worker_t *)arg;
+	size_t target_bytes = (size_t)g_cfg.workset_gb * 1024 * 1024 * 1024 / g_cfg.threads;
+	if (g_cfg.disable_tcache) {
+		bool enabled = false;
+		mallctl("thread.tcache.enabled", NULL, NULL, &enabled, sizeof(enabled));
+	}
+	if (g_cfg.batch_size == 0) worker_loop_random(w, target_bytes);
+	else                       worker_loop_batch(w, target_bytes);
 	/* 不 drain: drain 会把 frees 拉到等于 allocs, 使 ChurnRate 总是 1.0,
 	 * 无法反映稳态 churn。in-flight ptrs 让 OS exit 回收 (不影响 jemalloc stats). */
 	return NULL;
@@ -349,48 +481,73 @@ static void
 print_usage(const char *prog) {
 	fprintf(stderr,
 	    "Usage: %s [options]\n"
-	    "  --workset GB       工作集大小 (default: 8)\n"
-	    "  --threads N        工作线程数 (default: 32)\n"
-	    "  --duration S       运行时长秒 (default: 120)\n"
-	    "  --churn-rate F     目标 ndalloc/nmalloc (default: 0.95)\n"
-	    "  --seed X           随机种子 (default: 0=time)\n"
-	    "  --stat-print N     每 N 秒打印 jemalloc stats (default: 30)\n"
-	    "  --csv FILE         CSV 时序输出路径\n"
+	    "  --workset GB        工作集大小 (default: 8)\n"
+	    "  --threads N         工作线程数 (default: 32)\n"
+	    "  --duration S        运行时长秒 (default: 120)\n"
+	    "  --churn-rate F      目标 ndalloc/nmalloc (default: 0.95, 仅 batch-size=0 生效)\n"
+	    "  --batch-size K      一个 \"请求\" 内的 alloc 数 (default: 0=老 random 路径)\n"
+	    "  --batch-keep-pct F  batch 对象进长尾池概率 (default: 0.05, 仅 batch-size>0 生效)\n"
+	    "  --flush-tcache-every N  每 N batch 调 thread.tcache.flush (default: 0=不主动 flush)\n"
+	    "  --disable-tcache    worker 启动时调 mallctl 关闭自己 tcache (default: 0, 等价生产配置)\n"
+	    "  --phase-count K     每 worker 仅 alloc SIZE_DIST 子集, 按 K 个 phase 旋转 (default: 0=禁用)\n"
+	    "  --phase-rotate-each N  每 N 个 alloc 后 worker 旋转到下一 phase (仅 phase-count>0 生效)\n"
+	    "  --seed X            随机种子 (default: 0=time)\n"
+	    "  --stat-print N      每 N 秒打印 jemalloc stats (default: 30)\n"
+	    "  --csv FILE          CSV 时序输出路径\n"
 	    "  --help\n", prog);
 }
 
 static void
 parse_args(int argc, char *argv[]) {
-	g_cfg.workset_gb   = 8;
-	g_cfg.threads      = 32;
-	g_cfg.duration_s   = 120;
-	g_cfg.churn_rate   = 0.95;
-	g_cfg.seed         = 0;
-	g_cfg.stat_print_s = 30;
-	g_cfg.csv_path     = NULL;
+	g_cfg.workset_gb     = 8;
+	g_cfg.threads        = 32;
+	g_cfg.duration_s     = 120;
+	g_cfg.churn_rate     = 0.95;
+	g_cfg.seed           = 0;
+	g_cfg.stat_print_s   = 30;
+	g_cfg.csv_path       = NULL;
+	g_cfg.batch_size         = 0;     /* 0 = 老 random 路径, 保持默认向后兼容 */
+	g_cfg.batch_keep_pct     = 0.05;
+	g_cfg.flush_tcache_every = 0;
+	g_cfg.disable_tcache     = 0;
+	g_cfg.phase_count        = 0;     /* 0 = phase rotation 禁用 */
+	g_cfg.phase_rotate_each  = 100000;
+	g_cfg.phase_at           = NULL;
 
 	static struct option opts[] = {
-		{"workset",     required_argument, 0, 'w'},
-		{"threads",     required_argument, 0, 't'},
-		{"duration",    required_argument, 0, 'd'},
-		{"churn-rate",  required_argument, 0, 'c'},
-		{"seed",        required_argument, 0, 's'},
-		{"stat-print",  required_argument, 0, 'p'},
-		{"csv",         required_argument, 0, 'C'},
-		{"help",        no_argument,       0, 'h'},
+		{"workset",            required_argument, 0, 'w'},
+		{"threads",            required_argument, 0, 't'},
+		{"duration",           required_argument, 0, 'd'},
+		{"churn-rate",         required_argument, 0, 'c'},
+		{"seed",               required_argument, 0, 's'},
+		{"stat-print",         required_argument, 0, 'p'},
+		{"csv",                required_argument, 0, 'C'},
+		{"batch-size",         required_argument, 0, 'B'},
+		{"batch-keep-pct",     required_argument, 0, 'K'},
+		{"flush-tcache-every", required_argument, 0, 'F'},
+		{"disable-tcache",     no_argument,       0, 'T'},
+		{"phase-count",        required_argument, 0, 'P'},
+		{"phase-rotate-each",  required_argument, 0, 'R'},
+		{"help",               no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
 	while ((opt = getopt_long(argc, argv, "", opts, NULL)) != -1) {
 		switch (opt) {
-		case 'w': g_cfg.workset_gb   = (uint32_t)atoi(optarg); break;
-		case 't': g_cfg.threads      = (uint32_t)atoi(optarg); break;
-		case 'd': g_cfg.duration_s   = (uint32_t)atoi(optarg); break;
-		case 'c': g_cfg.churn_rate   = atof(optarg); break;
-		case 's': g_cfg.seed         = (uint64_t)strtoull(optarg, NULL, 10); break;
-		case 'p': g_cfg.stat_print_s = (uint32_t)atoi(optarg); break;
-		case 'C': g_cfg.csv_path     = optarg; break;
+		case 'w': g_cfg.workset_gb     = (uint32_t)atoi(optarg); break;
+		case 't': g_cfg.threads        = (uint32_t)atoi(optarg); break;
+		case 'd': g_cfg.duration_s     = (uint32_t)atoi(optarg); break;
+		case 'c': g_cfg.churn_rate     = atof(optarg); break;
+		case 's': g_cfg.seed           = (uint64_t)strtoull(optarg, NULL, 10); break;
+		case 'p': g_cfg.stat_print_s   = (uint32_t)atoi(optarg); break;
+		case 'C': g_cfg.csv_path       = optarg; break;
+		case 'B': g_cfg.batch_size         = (uint32_t)atoi(optarg); break;
+		case 'K': g_cfg.batch_keep_pct     = atof(optarg); break;
+		case 'F': g_cfg.flush_tcache_every = (uint32_t)atoi(optarg); break;
+		case 'T': g_cfg.disable_tcache     = 1; break;
+		case 'P': g_cfg.phase_count        = (uint32_t)atoi(optarg); break;
+		case 'R': g_cfg.phase_rotate_each  = (uint32_t)atoi(optarg); break;
 		case 'h': print_usage(argv[0]); exit(0);
 		default:  print_usage(argv[0]); exit(2);
 		}
@@ -398,15 +555,38 @@ parse_args(int argc, char *argv[]) {
 	if (g_cfg.seed == 0) g_cfg.seed = (uint64_t)time(NULL);
 
 	fprintf(stderr,
-	    "config: workset=%uGB threads=%u duration=%us churn=%.2f seed=%lu csv=%s\n",
+	    "config: workset=%uGB threads=%u duration=%us churn=%.2f seed=%lu "
+	    "batch_size=%u batch_keep_pct=%.3f flush_tcache_every=%u disable_tcache=%u "
+	    "phase_count=%u phase_rotate_each=%u csv=%s\n",
 	    g_cfg.workset_gb, g_cfg.threads, g_cfg.duration_s, g_cfg.churn_rate,
-	    (unsigned long)g_cfg.seed, g_cfg.csv_path ? g_cfg.csv_path : "(none)");
+	    (unsigned long)g_cfg.seed, g_cfg.batch_size, g_cfg.batch_keep_pct,
+	    g_cfg.flush_tcache_every, g_cfg.disable_tcache,
+	    g_cfg.phase_count, g_cfg.phase_rotate_each,
+	    g_cfg.csv_path ? g_cfg.csv_path : "(none)");
 }
 
 int
 main(int argc, char *argv[]) {
 	parse_args(argc, argv);
 	alias_build(&g_cfg.at, SIZE_DIST, SIZE_DIST_N);
+
+	/* phase rotation: 建 K 个子表, phase k 含 SIZE_DIST[i] where i%K==k */
+	if (g_cfg.phase_count > 1) {
+		g_cfg.phase_at = calloc(g_cfg.phase_count, sizeof(alias_table_t));
+		size_dist_t subset[SIZE_DIST_N];
+		for (uint32_t k = 0; k < g_cfg.phase_count; k++) {
+			uint32_t n_sub = 0;
+			for (uint32_t i = 0; i < SIZE_DIST_N; i++) {
+				if (i % g_cfg.phase_count == k) subset[n_sub++] = SIZE_DIST[i];
+			}
+			if (n_sub == 0) {
+				fprintf(stderr, "phase %u 为空: SIZE_DIST_N(%zu) < phase_count(%u)\n",
+				    k, (size_t)SIZE_DIST_N, g_cfg.phase_count);
+				exit(2);
+			}
+			alias_build(&g_cfg.phase_at[k], subset, n_sub);
+		}
+	}
 
 	worker_t *workers = calloc(g_cfg.threads, sizeof(worker_t));
 	pthread_t *threads = calloc(g_cfg.threads, sizeof(pthread_t));
@@ -415,6 +595,12 @@ main(int argc, char *argv[]) {
 		workers[i].cap = 65536;
 		workers[i].live      = malloc(workers[i].cap * sizeof(void *));
 		workers[i].live_size = malloc(workers[i].cap * sizeof(size_t));
+		if (g_cfg.batch_size > 0) {
+			workers[i].batch_buf = malloc(g_cfg.batch_size * sizeof(void *));
+			workers[i].batch_szs = malloc(g_cfg.batch_size * sizeof(size_t));
+		}
+		/* phase 错开: worker i 起始 phase = i % K, 让全局 byte share 不变 */
+		if (g_cfg.phase_count > 0) workers[i].cur_phase = i % g_cfg.phase_count;
 		pcg32_init(&workers[i].rng, g_cfg.seed, i + 1);
 	}
 
@@ -455,8 +641,16 @@ main(int argc, char *argv[]) {
 	for (uint32_t i = 0; i < g_cfg.threads; i++) {
 		free(workers[i].live);
 		free(workers[i].live_size);
+		if (g_cfg.batch_size > 0) {
+			free(workers[i].batch_buf);
+			free(workers[i].batch_szs);
+		}
 	}
 	free(workers); free(threads);
 	alias_destroy(&g_cfg.at);
+	if (g_cfg.phase_at) {
+		for (uint32_t k = 0; k < g_cfg.phase_count; k++) alias_destroy(&g_cfg.phase_at[k]);
+		free(g_cfg.phase_at);
+	}
 	return 0;
 }
