@@ -72,6 +72,7 @@ readonly version_lean=21d264a66d53b0a910178ae7d9529cb5886a39b6 # build fix for r
 readonly version_rocksdb=8.1.1
 readonly version_lua=v5.4.7
 readonly version_linux=6.5.1
+readonly version_kq_bench=v0.19.0-beta0
 
 # HTTP-downloaded files checksums
 readonly sha256sum_sh6bench="506354d66b9eebef105d757e055bc55e8d4aea1e7b51faab3da35b0466c923a1"
@@ -113,6 +114,7 @@ setup_lean=0
 setup_redis=0
 setup_rocksdb=0
 setup_linux=0
+setup_kq_bench=0
 
 # various
 setup_packages=0
@@ -174,6 +176,7 @@ while : ; do
         setup_redis=$flag_arg
         setup_rocksdb=$flag_arg
         setup_linux=$flag_arg
+        setup_kq_bench=$flag_arg
         setup_bench=$flag_arg
         setup_packages=$flag_arg
         ;;
@@ -225,6 +228,8 @@ while : ; do
         setup_rocksdb=$flag_arg;;
     linux)
         setup_linux=$flag_arg;;
+    kq_bench|kq-bench)
+        setup_kq_bench=$flag_arg;;
     rp)
         setup_rp=$flag_arg;;
     sc)
@@ -293,6 +298,7 @@ while : ; do
         echo "  redis                        setup redis benchmark"
         echo "  rocksdb                      setup rocksdb benchmark"
         echo "  linux                        setup linux benchmark"
+        echo "  kq_bench                     setup kqmalloc benchmark ($version_kq_bench)"
         echo ""
         echo "Prefix an option with 'no-' to disable an option"
         exit 0;;
@@ -822,6 +828,13 @@ if test "$setup_redis" = "1"; then
 
   cd "redis-$version_redis/src"
   USE_JEMALLOC=no MALLOC=libc BUILD_TLS=no make -j $procs
+  popd
+fi
+
+if test "$setup_kq_bench" = "1"; then
+  phase "build kq_bench $version_kq_bench"
+  checkout kq_bench $version_kq_bench https://gitcode.com/boostkit/kqmalloc.git
+  make clean kunpeng
   popd
 fi
 

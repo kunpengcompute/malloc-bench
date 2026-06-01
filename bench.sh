@@ -174,6 +174,7 @@ readonly redis_dir="$localdevdir/redis-$version_redis/src"
 readonly pdfdoc="$localdevdir/large.pdf" 
 readonly rocksdb_dir="$localdevdir/rocksdb-$version_rocksdb"
 readonly linux_dir="$localdevdir/linux-$version_linux"
+readonly kq_bench_root="$localdevdir/kq_bench/build"
 
 readonly spec_dir="$localdevdir/../../spec2017"
 readonly spec_base="base"
@@ -285,6 +286,12 @@ function tests_run_add_remove { # <test> <add?>
   fi
 }
 
+function kq_bench_tests_add_remove { # <hip> <add?>
+  for kq_bench_mode in 0 1 2; do
+    tests_run_add_remove "kq_bench_$1_m$kq_bench_mode" "$2"
+  done
+}
+
 function read_external_allocators_from_file { # file
   REGEXP="^([^ ]+) +(.+)$"
 
@@ -308,7 +315,6 @@ fi
 if [ ! -f "${localdevdir}/lean/bin/lean" ]; then  # only run lean if it is installed (for CI)
   tests_exclude="$tests_exclude lean lean-mathlib"
 fi
-
 
 # --------------------------------------------------------------------
 # Parse command line
@@ -363,6 +369,14 @@ while : ; do
             for tst in $tests_quickt; do
               tests_run_add_remove "$tst" "$flag_arg"
             done;;
+        kq_bench_08_m[0-2]|kq_bench_09_m[0-2]|kq_bench_12_m[0-2])
+            tests_run_add_remove "$flag" "$flag_arg";;
+        kq_bench_08)
+            kq_bench_tests_add_remove "08" "$flag_arg";;
+        kq_bench_09)
+            kq_bench_tests_add_remove "09" "$flag_arg";;
+        kq_bench_12)
+            kq_bench_tests_add_remove "12" "$flag_arg";;
         glibc)
             tests_run_add_remove "glibc-simple" "$flag_arg"
             tests_run_add_remove "glibc-thread" "$flag_arg";;
@@ -460,6 +474,20 @@ while : ; do
     fi
   fi
   shift
+done
+
+# kqmalloc v0.19.0-beta0 `make clean kunpeng` emits benchmark binaries here.
+for kq_bench_hip in 08 09 12; do
+  kq_bench_bin="$kq_bench_root/HIP$kq_bench_hip/bin/malloc_benchmark"
+  if [ ! -x "$kq_bench_bin" ]; then
+    for kq_bench_mode in 0 1 2; do
+      kq_bench_test="kq_bench_${kq_bench_hip}_m$kq_bench_mode"
+      if contains "$tests_run" "$kq_bench_test"; then
+        warning "$kq_bench_test requested but $kq_bench_bin is missing; run '../../build-bench-env.sh kq_bench' first."
+      fi
+      tests_exclude="$tests_exclude $kq_bench_test"
+    done
+  fi
 done
 
 echo "benchmarking on $procs cores."
@@ -677,6 +705,11 @@ function run_test_cmd {  # <test name> <command>
   done             
 }
 
+function run_kq_bench {  # <hip> <mode>
+  local kq_bench_bin="$kq_bench_root/HIP$1/bin/malloc_benchmark"
+  run_test_cmd "kq_bench_$1_m$2" "$kq_bench_bin -mode $2 -threads $procs -affinity 0"
+}
+
 
 # --------------------------------------------------------------------
 # Run all tests
@@ -721,6 +754,24 @@ function run_test {  # <test>
       run_test_cmd "redis" "$redis_dir/redis-benchmark -r 1000000 -n 100000 -q -P 16 lpush a 1 2 3 4 5 lrange a 1 5";;
     rocksdb)
       run_test_cmd "rocksdb" "$rocksdb_dir/db_bench --benchmarks=fillrandom";;
+    kq_bench_08_m0)
+      run_kq_bench "08" "0";;
+    kq_bench_08_m1)
+      run_kq_bench "08" "1";;
+    kq_bench_08_m2)
+      run_kq_bench "08" "2";;
+    kq_bench_09_m0)
+      run_kq_bench "09" "0";;
+    kq_bench_09_m1)
+      run_kq_bench "09" "1";;
+    kq_bench_09_m2)
+      run_kq_bench "09" "2";;
+    kq_bench_12_m0)
+      run_kq_bench "12" "0";;
+    kq_bench_12_m1)
+      run_kq_bench "12" "1";;
+    kq_bench_12_m2)
+      run_kq_bench "12" "2";;
     alloc-test)
       run_test_cmd "alloc-test1" "./alloc-test 1"
       if test "$procs" != "1"; then
