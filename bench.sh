@@ -16,8 +16,9 @@ readonly tests_all1="cfrac espresso barnes redis lean larson-sized mstress rptes
 readonly tests_all2="alloc-test sh6bench sh8bench xmalloc-test cscratch glibc-simple glibc-thread rocksdb"
 readonly tests_all3="larson lean-mathlib linux malloc-large mleak rbstress cthrash"
 readonly tests_all4="z3 spec spec-bench security"
+readonly tests_all5="recommend-like"  # jemalloc-only KPI bench
 
-readonly tests_all="$tests_all1 $tests_all2 $tests_all3 $tests_all4"
+readonly tests_all="$tests_all1 $tests_all2 $tests_all3 $tests_all4 $tests_all5"
 readonly tests_allt="$tests_all1 $tests_all2"  # run with 'allt' command option
 readonly tests_quickt="cfrac alloc-testN larson-sized lean redis rocksdb"  # quick essential benchmarks, run with 'quickt' command option
 
@@ -446,6 +447,7 @@ while : ; do
             echo ""
             echo "further tests:"
             echo "  $tests_all3 $tests_all4"
+            echo "  $tests_all5  (jemalloc-only KPI bench)"
             echo ""
             echo "secure allocators included in 'allsa':"
             echo "  $alloc_secure"
@@ -744,6 +746,27 @@ function run_test {  # <test>
     larson-sized)
       local larson_threads=$(( procs > 100 ? 100 : procs ))
       run_test_cmd "larsonN-sized" "./larson-sized 5 8 1000 5000 100 4141 $larson_threads";;
+    recommend-like)
+      # jemalloc-only: the bench links jemalloc at compile time for mallctl/stats;
+      # under a non-jemalloc allocator, stats and malloc/free diverge so KPIs are
+      # untrustworthy. Default whitelist is je/myje/myje-base; override via the
+      # RECOMMEND_LIKE_ALLOCS env var (space-separated).
+      local je_allocs="${RECOMMEND_LIKE_ALLOCS:-je myje myje-base}"
+      local filtered=""
+      for a in $alloc_run; do
+        if contains "$je_allocs" "$a"; then
+          filtered="$filtered $a"
+        fi
+      done
+      if [ -z "$filtered" ]; then
+        warning "recommend-like: only jemalloc-family allocators supported ($je_allocs); current alloc_run='$alloc_run', skipped"
+        return
+      fi
+      local saved_alloc_run="$alloc_run"
+      alloc_run="$filtered"
+      local recommend_threads=$(( procs > 100 ? 100 : procs ))
+      run_test_cmd "recommend-like" "./recommend-like-bench --workset 8 --threads $recommend_threads --duration 60"
+      alloc_run="$saved_alloc_run";;
     sh6bench)
       run_test_cmd "sh6benchN" "./sh6bench $procsx2";;
     sh8bench)

@@ -72,6 +72,16 @@ add_executable(alloc-test alloc-test/test_common.cpp alloc-test/allocator_tester
 target_compile_definitions(alloc-test PRIVATE BENCH=4)
 target_link_libraries(alloc-test pthread)
 
+set(JEMALLOC_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/../extern/je"
+    CACHE PATH "jemalloc build/install prefix for recommend-like bench (default: ./build-bench-env.sh je 产物)")
+add_executable(recommend-like-bench recommend-like/recommend_like_bench.c)
+target_include_directories(recommend-like-bench PRIVATE "${JEMALLOC_PREFIX}/include")
+target_link_libraries(recommend-like-bench
+    "${JEMALLOC_PREFIX}/lib/libjemalloc.so"
+    pthread
+    dl
+)
+
 if(NOT APPLE)
   add_executable(sh6bench shbench/sh6bench-new.c)
   target_compile_definitions(sh6bench PRIVATE BENCH=1 SYS_MULTI_THREAD=1)

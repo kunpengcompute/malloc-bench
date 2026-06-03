@@ -219,6 +219,22 @@ The second set of benchmarks are stress tests and consist of:
   threads, and 100 purely deallocating threads with objects of various sizes
   migrating between them. This asymmetric producer/consumer pattern is usually
   difficult to handle by allocators with thread-local caches.
+- __recommend-like__: jemalloc-specific KPI bench simulating
+  search/recommendation request workloads — short-lived objects, high churn,
+  steady-state dirty pages. Reads 5 jemalloc stats via `mallctl`
+  (Allocated/RSS, Dirty/RSS, Metadata/Allocated, ChurnRate, 16-32K alloc
+  count) and validates whether the bench shape matches real-service profiles.
+  Three entry points: `run_sanity.sh` (single-run KPI PASS/FAIL),
+  `run.sh` (B0 vs A multi-round compare with MAD/median noise floor), and
+  the main `bench.sh recommend-like` driver — see
+  [`bench/recommend-like/README.md`](bench/recommend-like/README.md).
+  **Jemalloc-only**: the bench binary links jemalloc at compile time for
+  the stats interface, so `bench.sh` filters `alloc_run` against a
+  jemalloc-family whitelist (`je myje myje-base`, overridable via
+  `RECOMMEND_LIKE_ALLOCS`) and warns + skips on other allocators to avoid
+  writing meaningless KPI rows into `benchres.csv`. Example:
+  `../../bench.sh je recommend-like` (OK),
+  `../../bench.sh tc mi recommend-like` (skipped).
 
 Finally, there is a
 [security benchmark](https://github.com/daanx/mimalloc-bench/tree/master/bench/security)
