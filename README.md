@@ -54,10 +54,10 @@ Or just test _mimalloc_ and _tcmalloc_ on _cfrac_ and _larson_ with 16 threads:
 
 - `~/dev/mimalloc-bench/out/bench>../../bench.sh --procs=16 mi tc cfrac larson`
 
-Or run the **quick essential benchmark set** (`quickt`) covering the four most
-representative tests across distinct evaluation dimensions:
+Or run the **quick essential benchmark set** (`quickt`) and append the matching
+KQ benchmark group explicitly:
 
-- `~/dev/mimalloc-bench/out/bench>../../bench.sh --procs=\`nproc\` -r=5 -n=1 -s=1 kq_09 je tc mi quickt`
+- `~/dev/mimalloc-bench/out/bench>../../bench.sh --procs=\`nproc\` -r=5 -n=1 -s=1 kq_09 je tc mi quickt kq_bench_09`
 
 Generally, you can specify the allocators (`mi`, `je`,
 `tc`, `hd`, `sys` (system allocator)) etc, and the benchmarks
@@ -190,6 +190,12 @@ The second set of benchmarks are stress tests and consist of:
 - __cache_trash__: part of [Hoard](https://github.com/emeryberger/Hoard)
   benchmarking suite, designed to exercise heap cache locality.
 - __glibc-simple__ and __glibc-thread__: benchmarks for the [glibc](https://github.com/bminor/glibc/tree/master/benchtests).
+- __kq_bench_08/09/12__: the `malloc_benchmark` benchmark from
+  [boostkit/kqmalloc](https://gitcode.com/boostkit/kqmalloc/tree/v0.19.0-beta0)
+  v0.19.0-beta0, built as `extern/kq_bench` with `make clean kunpeng`.
+  These group aliases expand to `kq_bench_<hip>_m0`, `kq_bench_<hip>_m1`,
+  and `kq_bench_<hip>_m2`; each item runs one mode with
+  `-threads N -affinity 0`.
 - __malloc-large__: part of mimalloc benchmarking suite, designed
   to exercice large (several MiB) allocations.
 - __mleak__: check that terminate threads don't "leak" memory.
@@ -288,10 +294,11 @@ The table below ranks each benchmark by two criteria:
 
 ## Quick Benchmark Set (`quickt`)
 
-For a fast but representative evaluation, use the `quickt` option:
+For a fast but representative evaluation, use the `quickt` option and append
+the matching KQ benchmark group explicitly:
 
 ```
-~/dev/mimalloc-bench/out/bench> ../../bench.sh --procs=`nproc` -r=5 -n=1 -s=1 kq_09 je tc mi quickt
+~/dev/mimalloc-bench/out/bench> ../../bench.sh --procs=`nproc` -r=5 -n=1 -s=1 kq_09 je tc mi quickt kq_bench_09
 ```
 
 This runs carefully selected benchmarks that together cover the most important
@@ -305,9 +312,10 @@ and distinct evaluation dimensions:
 | **leanN** | Real-world dense multi-thread allocation | Large-scale compiler workload; most predictive of real application performance |
 | **redis** | Real-world single-threaded workload | High real-world relevance (server workload) |
 | **rocksdb** | Real-world storage engine workload | Good database-workload coverage; bottleneck is often I/O rather than allocation; but particularly effective for validating memory usage characteristics |
+| **kq_bench_08/09/12** | KQ malloc stress modes | Optional group aliases that run the kqmalloc `malloc_benchmark` modes using explicit HIP08, HIP09, or HIP12 binaries |
 
 These benchmarks cover single-threaded performance, multi-threaded scalability,
-cross-thread migration, real-world behavior, and memory usage — together giving a
+cross-thread migration, real-world behavior, and memory usage - together giving a
 meaningful and well-rounded picture of allocator quality.
 
 For a more thorough evaluation, add `xmalloc-test`, `mstress`, `cache-scratch`,
@@ -316,12 +324,13 @@ allocations, false-sharing detection, and security properties.
 
 ### One-shot runner: `run_quickt.sh`
 
-`run_quickt.sh` is a convenience wrapper that runs the `quickt` set and
-immediately feeds the results through `scripts/analyze_bench.py` (median,
-MAD, and ratio tables appended to `benchres.csv`).
+`run_quickt.sh` is a convenience wrapper that runs the `quickt` set, appends
+the CPU-matched `kq_bench` group, and immediately feeds the results through
+`scripts/analyze_bench.py` (median, MAD, and ratio tables appended to
+`benchres.csv`).
 
 ```bash
-# Default: auto-detects KQ allocator variant from CPU part, plus je tc mi
+# Default: auto-detects KQ allocator and kq_bench variants from CPU part, plus je tc mi
 ./run_quickt.sh
 
 # Explicit allocator list
@@ -331,13 +340,14 @@ MAD, and ratio tables appended to `benchres.csv`).
 ROUNDS=3 PROCS=4 ./run_quickt.sh kq_09 je tc mi
 ```
 
-The script auto-detects the KQ allocator variant from `/proc/cpuinfo`:
+The script auto-detects the KQ allocator and matching `kq_bench` variant from
+`/proc/cpuinfo`:
 
-| CPU part | Variant selected |
-|----------|-----------------|
-| `0xd06`  | `kq_12`         |
-| `0xd02`  | `kq_09`         |
-| other    | `kq_08`         |
+| CPU part | Allocator | kq_bench |
+|----------|-----------|----------|
+| `0xd06`  | `kq_12`   | `kq_bench_12` |
+| `0xd02`  | `kq_09`   | `kq_bench_09` |
+| other    | `kq_08`   | `kq_bench_08` |
 
 After the run, `scripts/analyze_bench.py` prints median, MAD, and ratio
 tables to stdout and appends them to `out/bench/benchres.csv`.
