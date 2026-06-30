@@ -113,7 +113,7 @@ for the versions:
   Jansson](https://twitter.com/maniccoder) at Epic Games, used for example
   in [Haiku](https://git.haiku-os.org/haiku/commit/?id=7132b79eafd69cced14f028f227936b9eca4de48).
 - **sc**: The [_scalloc_](https://github.com/cksystemsgroup/scalloc) allocator,
-  a fast, multicore-scalable, low-fragmentation memory allocator 
+  a fast, multicore-scalable, low-fragmentation memory allocator
 - **scudo**: The
   [_scudo_](https://www.llvm.org/docs/ScudoHardenedAllocator.html) allocator
   used by Fuschia and Android.
@@ -167,7 +167,7 @@ some, and consists of:
    behavior (which they call _bleeding_) in actual server applications,
    and the benchmark simulates this.
 - __larsonN-sized__: same as the __larsonN__ except it uses sized deallocation calls which
-   have a fast path in some allocators. 
+   have a fast path in some allocators.
 - __lua__: compiling the [lua interpreter](https://github.com/lua/lua).
 - __z3__: perform some computations in [z3](https://github.com/Z3Prover/z3).
 
@@ -200,8 +200,8 @@ The second set of benchmarks are stress tests and consist of:
   to exercice large (several MiB) allocations.
 - __mleak__: check that terminate threads don't "leak" memory.
 - __rptest__: modified version of the [rpmalloc-benchmark](https://github.com/mjansson/rpmalloc-benchmark) suite.
-- __mstress__: simulates real-world server-like allocation patterns, using N threads with with allocations in powers of 2  
-  where objects can migrate between threads and some have long life times. Not all threads have equal workloads and 
+- __mstress__: simulates real-world server-like allocation patterns, using N threads with with allocations in powers of 2
+  where objects can migrate between threads and some have long life times. Not all threads have equal workloads and
   after each phase all threads are destroyed and new threads created where some objects survive between phases.
 - __rbstress__: modified version of [allocator_bench](https://github.com/SamSaffron/allocator_bench),
   allocates chunks in memory via ruby shenanigans.
